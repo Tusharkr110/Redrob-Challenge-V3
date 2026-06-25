@@ -292,3 +292,155 @@ def stage1_filter_and_score(candidates_file: str) -> list:
     top = [x[1] for x in survivors[:1500]]
     print(f"  Stage 1: top {len(top)} selected for deep scoring")
     return top
+
+# =============================================================================
+# STAGE 2 — DEEP SEMANTIC + MULTI-SIGNAL SCORING
+# =============================================================================
+
+def stage2_score(candidates: list, model: SentenceTransformer) -> list:
+
+    jd_text = (
+        "Senior AI Engineer Founding Team Series A talent intelligence platform "
+        "Pune Noida India. Deep technical depth: embeddings, sentence-transformers, "
+        "dense vector search, hybrid retrieval, information retrieval, RAG, "
+        "vector databases (Pinecone, Weaviate, Qdrant, Milvus, FAISS), "
+        "learning-to-rank, ranking evaluation NDCG MRR MAP, LLM fine-tuning, "
+        "PyTorch, strong Python, product company, shipper mindset."
+    )
+    jd_emb = model.encode(jd_text, normalize_embeddings=True)
+
+    texts = []
+    for c in candidates:
+        p  = c.get("profile", {})
+        sk = c.get("skills", [])
+        texts.append(
+            f"{p.get('current_title','')} - {p.get('headline','')}. "
+            f"{p.get('summary','')}. "
+            f"Skills: {', '.join(s.get('name','') for s in sk)}."
+        )
+
+    print(f"  Stage 2: encoding {len(texts)} candidate texts ...")
+    cand_embs = model.encode(
+        texts,
+        batch_size=64,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    )
+    sem_scores = cand_embs @ jd_emb
+
+    results = []
+
+    for idx, c in enumerate(candidates):
+        cid     = c.get("candidate_id")
+        profile = c.get("profile", {})
+        career  = c.get("career_history", [])
+        skills  = c.get("skills", [])
+        signals = c.get("redrob_signals", {})
+
+        exp             = float(profile.get("years_of_experience", 0) or 0)
+        cur_title_lower = profile.get("current_title", "").lower()
+        cand_clean_skills = {_clean(s.get("name", "")) for s in skills}
+        willing_relocate  = signals.get("willing_to_relocate", False)
+
+        # S_exp
+        if 6.0 <= exp <= 8.0:
+            s_exp = 1.00
+        elif 5.0 <= exp < 6.0 or 8.0 < exp <= 9.5:
+            s_exp = 0.85
+        elif 4.0 <= exp < 5.0 or 9.5 < exp <= 12.0:
+            s_exp = 0.60
+        elif 3.0 <= exp < 4.0 or 12.0 < exp <= 14.0:
+            s_exp = 0.35
+        else:
+            s_exp = 0.10
+
+        # S_loc
+        country = profile.get("country", "").lower()
+        city    = profile.get("location", "").lower()
+        primary = any(c in city for c in [
+            "pune", "noida", "delhi", "mumbai", "hyderabad",
+            "gurgaon", "ncr", "bangalore", "bengaluru",
+        ])
+        secondary = any(c in city for c in ["chennai", "kolkata", "kochi"])
+
+        if "india" in country:
+            if primary:
+                s_loc = 1.00
+            elif secondary:
+                s_loc = 1.00 if willing_relocate else 0.70
+            else:
+                s_loc = 0.85 if willing_relocate else 0.35
+        else:
+            s_loc = 0.55
+
+        # S_emp
+        total_months = sum(job_duration_months(j) for j in career)
+        if total_months == 0:
+            s_emp = 0.50
+        else:
+            s_emp = sum(
+                employer_tier_score(
+                    j.get("company", ""),
+                    j.get("company_size", "1-10"),
+                    j.get("industry", ""),
+                ) * job_duration_months(j)
+                for j in career
+            ) / total_months
+
+        # S_sem
+        s_sem = float(max(0.0, sem_scores[idx]))
+
+        # S_skill with recency decay
+        skill_recency: dict = {}
+        for s in skills:
+            sclean = _clean(s.get("name", ""))
+            latest = None
+            for j in career:
+                desc  = j.get("description", "").lower()
+                title = j.get("title", "").lower()
+                if sclean in _clean(title) or sclean in _clean(desc):
+                    ed = parse_date(j.get("end_date"))
+                    if j.get("is_current") or ed is None:
+                        latest = CURRENT_DATE
+                        break
+                    elif latest is None or ed > latest:
+                        latest = ed
+            if latest:
+                skill_recency[sclean] = max(0.0, (CURRENT_DATE - latest).days / 365.25)
+            else:
+                skill_recency[sclean] = 2.0
+
+        prof_weight = {"expert": 1.0, "advanced": 0.8, "intermediate": 0.5, "beginner": 0.2}
+
+        cluster_scores: dict = {}
+        for cluster, clean_set in CLEAN_CLUSTERS.items():
+            cluster_vals = []
+            for s in skills:
+                sc = _clean(s.get("name", ""))
+                if sc not in clean_set:
+                    continue
+                pw  = prof_weight.get(s.get("proficiency", "beginner"), 0.2)
+                dur = min(s.get("duration_months", 0), 36)
+                recency_w = math.exp(-0.15 * skill_recency.get(sc, 2.0))
+                cluster_vals.append(pw * recency_w * dur / 36.0)
+            cluster_scores[cluster] = min(sum(cluster_vals), 1.0)
+
+        s_skill = sum(cluster_scores.values()) / len(CLEAN_CLUSTERS)
+
+        results.append({
+            "candidate_id": cid,
+            "final_score":  round(float(s_sem * 0.35 + s_skill * 0.30 +
+                                        s_exp  * 0.15 + s_emp  * 0.12 +
+                                        s_loc  * 0.08), 4),
+            "s_sem":   round(s_sem,   4),
+            "s_skill": round(s_skill, 4),
+            "s_exp":   round(s_exp,   4),
+            "s_emp":   round(s_emp,   4),
+            "s_loc":   round(s_loc,   4),
+            "flags":   "none",
+            "reasoning": "",
+        })
+
+    print(f"  Stage 2: {len(results)} candidates scored")
+    results.sort(key=lambda x: (-x["final_score"], x["candidate_id"]))
+    return results
