@@ -18,9 +18,9 @@ team_members:
     email: "tusharkr4uall@gmail.com"
     role: "ML Engineer / Signals & Evaluation"
 
-github_repo: "https://github.com/tusharkr110/Redrob-Challenge"
+github_repo: "https://github.com/tusharkr110/Redrob-Challenge-V3"
 
-sandbox_link: "https://ayushman5673-redrob-challenge-app-1q9pf3.streamlit.app/"
+sandbox_link: "https://redrob-challenge-v3-jc8mgzzvapa3u8yuysitft.streamlit.app/"
 
 reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
 
