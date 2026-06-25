@@ -19,3 +19,9 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+audit.py
+submission_new.csv
+submission_detailed_new.csv
+submission_new_detailed.csv
+demo_candidates.jsonl

@@ -178,8 +178,7 @@ def employer_tier_score(company: str, size: str, industry: str) -> float:
 # =============================================================================
 # STAGE 1 — HARD FILTERS + HEURISTIC SELECTION
 # =============================================================================
-
-def stage1_filter_and_score(candidates_file: str) -> list:
+def stage1_filter_and_score(candidates_file: str, demo_mode: bool = False) -> list:
     survivors = []
     total = 0
 
@@ -204,7 +203,8 @@ def stage1_filter_and_score(candidates_file: str) -> list:
                     hp = True
                     break
             if hp:
-                continue
+                if not demo_mode:
+                    continue
 
             # 1B. HONEYPOT — company founding date violations
             for job in career:
@@ -221,7 +221,8 @@ def stage1_filter_and_score(candidates_file: str) -> list:
                     except (ValueError, IndexError):
                         pass
             if hp:
-                continue
+                if not demo_mode:
+                    continue
 
             # 1C. HONEYPOT — expert skill inflation
             expert_zero = sum(
@@ -229,11 +230,13 @@ def stage1_filter_and_score(candidates_file: str) -> list:
                 if s.get("proficiency") == "expert" and s.get("duration_months", 0) == 0
             )
             if expert_zero >= 5:
-                continue
+                if not demo_mode:
+                    continue
 
             # 1D. HONEYPOT — multiple current roles
             if sum(1 for j in career if j.get("is_current")) > 1:
-                continue
+                if not demo_mode:
+                    continue
 
             # 1E. HONEYPOT — future start dates
             for job in career:
@@ -246,19 +249,22 @@ def stage1_filter_and_score(candidates_file: str) -> list:
                     hp = True
                     break
             if hp:
-                continue
+                if not demo_mode:
+                    continue
 
             # 1F. TRAP TITLE filter
             cur_title = profile.get("current_title", "").lower()
             if any(t in cur_title for t in TRAP_TITLES):
-                continue
+                if not demo_mode:
+                    continue
 
             # 1G. LOCATION hard block
             country          = profile.get("country", "").lower()
             willing_relocate = signals.get("willing_to_relocate", None)
             if "india" not in country:
                 if not willing_relocate:
-                    continue
+                    if not demo_mode:
+                        continue
 
             # 1H. HEURISTIC SCORE
             if 6.0 <= exp <= 8.0:
