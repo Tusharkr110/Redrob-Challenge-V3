@@ -632,6 +632,8 @@ def stage2_score(candidates: list, model: SentenceTransformer) -> list:
             f"Strong signal on {skill_str}. "
             f"{loc_note}. Notice: {notice_str}{gh_note}.{concern}"
         )
+
+        
         
 
         results.append({
@@ -650,3 +652,58 @@ def stage2_score(candidates: list, model: SentenceTransformer) -> list:
     print(f"  Stage 2: {len(results)} candidates scored")
     results.sort(key=lambda x: (-x["final_score"], x["candidate_id"]))
     return results
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+def run_ranking(candidates_file: str, output_file: str) -> None:
+    print(f"\n[rank.py] Reading candidates from: {candidates_file}")
+
+    # Stage 1
+    print("\n[Stage 1] Hard filters + heuristic selection")
+    top_candidates = stage1_filter_and_score(candidates_file)
+
+    # Load model from local cache — no network needed
+    model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_cache")
+    print(f"\n[Model] Loading SentenceTransformer from {model_path}")
+    model = SentenceTransformer(model_path)
+
+    # Stage 2
+    print("\n[Stage 2] Semantic + multi-signal scoring")
+    scored = stage2_score(top_candidates, model)
+
+    # Write submission CSV — exactly 100 rows
+    top100  = scored[:100]
+    sub_rows = [
+        {
+            "candidate_id": r["candidate_id"],
+            "rank":         i + 1,
+            "score":        r["final_score"],
+            "reasoning":    r["reasoning"],
+        }
+        for i, r in enumerate(top100)
+    ]
+    sub_df = pd.DataFrame(sub_rows)[["candidate_id", "rank", "score", "reasoning"]]
+    sub_df.to_csv(output_file, index=False)
+    print(f"\n[Output] Submission CSV -> {output_file}  ({len(sub_df)} rows)")
+
+    # Write detailed CSV for debugging
+    detail_file = output_file.replace(".csv", "_detailed.csv")
+    detail_cols = ["candidate_id", "final_score", "s_sem", "s_skill",
+                   "s_exp", "s_emp", "s_loc", "m_beh", "flags", "reasoning"]
+    pd.DataFrame(scored[:100])[detail_cols].to_csv(detail_file, index=False)
+    print(f"[Output] Detailed CSV  -> {detail_file}")
+    print("\n[rank.py] Done!")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Rank 100k candidates against the Redrob Senior AI Engineer JD."
+    )
+    parser.add_argument("--candidates", required=True,
+                        help="Path to candidates.jsonl (uncompressed)")
+    parser.add_argument("--out", required=True,
+                        help="Path for the output submission.csv")
+    args = parser.parse_args()
+    run_ranking(args.candidates, args.out)
