@@ -73,7 +73,16 @@ if uploaded:
                 run_ranking(tmp_in_path, tmp_out_path)
                 df = pd.read_csv(tmp_out_path)
 
+                if len(df) < 100:
+                    st.warning(
+                        f"Only {len(df)} candidates ranked — this demo file has too few "
+                        f"candidates to fill 100 slots after hard filters. "
+                        f"The full 100k dataset always produces exactly 100 ranked candidates."
+                    )
+                else:
+                    st.success("100 candidates ranked successfully!")
                 st.subheader(f"Top {len(df)} candidates")
+                
                 st.dataframe(df, use_container_width=True, height=500)
 
                 csv_bytes = df.to_csv(index=False).encode("utf-8")
