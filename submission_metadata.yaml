@@ -1,0 +1,75 @@
+# Redrob Hackathon — Submission Metadata
+
+team_name: "Purushartha"
+
+primary_contact:
+  name: "Ayushman Parashar"
+  email: "ayushmanparashar5673@gmail.com"
+  phone: "+91-8580165551"
+
+team_members:
+  - name: "Ayushman Parashar"
+    email: "ayushmanparashar5673@gmail.com"
+    role: "Team Lead / Pipeline Architecture"
+  - name: "Ravi Shankar Gupta"
+    email: "ravishankar.kr440@gmail.com"
+    role: "ML Engineer / Scoring Logic"
+  - name: "Tushar Kumar"
+    email: "tusharkr4uall@gmail.com"
+    role: "ML Engineer / Signals & Evaluation"
+
+github_repo: "https://github.com/tusharkr110/Redrob-Challenge"
+
+sandbox_link: "https://ayushman5673-redrob-challenge-app-1q9pf3.streamlit.app/"
+
+reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
+
+compute:
+  platform: "Windows Local Machine"
+  cpu_cores: 8
+  ram_gb: 16
+  python_version: "3.11"
+  os: "Windows 11"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: false
+  pre_computation_time_minutes: 0
+
+ai_tools_used:
+  - "Claude"
+  - "Gemini"
+  - "Cursor"
+
+ai_usage_summary: |
+  Used Claude and Gemini for architecture discussion, code review, and debugging.
+  Used Cursor for refactoring and autocomplete.
+  All scoring logic, penalty design, and signal weighting were authored by the team.
+  No candidate data was fed to any external LLM.
+
+methodology_summary: |
+  Two-stage retrieve-and-rank pipeline.
+
+  Stage 1 streams all 100k candidates and applies five honeypot hard-filters
+  (impossible durations, founding-date violations, expert-skill inflation,
+  overlapping current roles, future dates), then removes trap titles and
+  out-of-India candidates without relocation intent. A lightweight heuristic
+  score (experience fit, critical skill count, title match, response rate)
+  selects the top 1,500 for deep scoring.
+
+  Stage 2 encodes each candidate with all-MiniLM-L6-v2 (offline cache, 88MB)
+  and computes a weighted base score: semantic similarity (0.35), per-cluster
+  skill score with recency decay (0.30), experience fit (0.15), employer
+  quality (0.12), location (0.08). A multiplicative behavioral modifier
+  combines recruiter response rate, last-active recency, notice period,
+  verification status, and open-to-work flag. Five proportional penalties
+  suppress consulting lifers, shallow-AI wrappers, non-coding managers,
+  title-chasers, and CV/speech specialists with no NLP exposure.
+
+  Runtime on 100k candidates: ~2 minutes CPU. Honeypot rate in top 100: 0%.
+
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
