@@ -427,18 +427,224 @@ def stage2_score(candidates: list, model: SentenceTransformer) -> list:
 
         s_skill = sum(cluster_scores.values()) / len(CLEAN_CLUSTERS)
 
+        # ── PENALTIES ────────────────────────────────────────────────────────
+
+        flags = []
+
+        # Consulting fraction penalty
+        consulting_months = sum(
+            job_duration_months(j) for j in career
+            if any(cf in j.get("company", "").lower() for cf in CONSULTING_FIRMS)
+        )
+        consulting_frac    = consulting_months / total_months if total_months else 0.0
+        consulting_penalty = 1.0 - 0.5 * consulting_frac
+        if consulting_frac > 0.0:
+            flags.append("consulting")
+
+        # Pure-academic penalty
+        is_all_academic = all(
+            any(w in j.get("company", "").lower()
+                for w in ["university", "lab", "research", "iit", "iisc", "institute"])
+            for j in career
+        ) if career else False
+
+        if is_all_academic:
+            gh = float(signals.get("github_activity_score", 0) or 0)
+            prod_kw   = ["production", "deploy", "scale", "shipped", "product company"]
+            full_text = profile.get("summary", "").lower() + " " + " ".join(
+                j.get("description", "").lower() for j in career
+            )
+            if gh < 50 and not any(w in full_text for w in prod_kw):
+                continue
+
+        # Shallow AI penalty
+        ml_months = sum(
+            job_duration_months(j) for j in career
+            if any(w in j.get("title", "").lower() + j.get("description", "").lower()
+                   for w in ["machine learning", " ml ", "ai ", "deep learning", "nlp"])
+        )
+        p_shallow = 1.0
+        if ml_months < 12 and not (cand_clean_skills & CORE_ML_SKILLS) and \
+                (cand_clean_skills & SHALLOW_AI_SKILLS):
+            p_shallow = 0.05
+            flags.append("shallow_ai")
+
+        # Non-coding manager penalty
+        is_mgr = any(w in cur_title_lower for w in
+                     ["manager", "lead", "architect", "head", "director"])
+        has_coding = False
+        months_checked = 0
+        for j in career:
+            desc = j.get("description", "").lower()
+            if any(w in desc for w in
+                   ["code", "develop", "implement", "python", "pytorch",
+                    "tensorflow", "engineer", "build", "program"]):
+                has_coding = True
+                break
+            months_checked += job_duration_months(j)
+            if months_checked >= 18:
+                break
+        p_noncoding = 1.0
+        if is_mgr and not has_coding:
+            p_noncoding = 0.10
+            flags.append("noncoding_lead")
+
+        # Title-chaser penalty
+        eligible_jobs = [
+            j for j in career
+            if j.get("company_size", "") not in ("1-10", "11-50")
+            and "layoff" not in j.get("description", "").lower()
+        ]
+        p_title_chaser = 1.0
+        if len(eligible_jobs) >= 3:
+            avg_tenure = sum(job_duration_months(j) for j in eligible_jobs) / len(eligible_jobs)
+            if avg_tenure < 12.0:
+                p_title_chaser = 0.20
+                flags.append("title_chaser")
+
+        # CV/Speech-only penalty
+        p_cv_speech = 1.0
+        if (cand_clean_skills & CV_SPEECH_SKILLS) and not (cand_clean_skills & NLP_IR_SKILLS):
+            p_cv_speech = 0.05
+            flags.append("cv_speech_only")
+
+        # ── BONUSES ──────────────────────────────────────────────────────────
+
+        gh_score = float(signals.get("github_activity_score", -1) or -1)
+        gh_bonus = 0.0
+        if gh_score >= 0:
+            full_text = (profile.get("summary", "") + " " +
+                         " ".join(j.get("description", "") for j in career)).lower()
+            ir_kw = ["rag", "vector search", "embedding", "information retrieval",
+                     "nlp", "large language model", "huggingface",
+                     "sentence-transformers", "faiss", "langchain"]
+            gh_bonus += 0.04 if any(w in full_text for w in ir_kw) else 0
+            gh_bonus += 0.03 if gh_score > 50 else 0
+            gh_bonus += 0.02 if gh_score > 30 else 0
+            gh_bonus  = min(gh_bonus, 0.10)
+
+        founding_bonus = 0.0
+        full_lower = (profile.get("summary", "") + " " +
+                      " ".join(j.get("description", "") for j in career)).lower()
+        if any(j.get("company_size", "") in ("1-10", "11-50") for j in career):
+            founding_bonus += 0.05
+        if any(w in full_lower for w in
+               ["founding member", "founding engineer", "first engineer"]):
+            founding_bonus += 0.08
+        if any(w in full_lower for w in
+               ["built from scratch", "built ml infra", "built search from scratch"]):
+            founding_bonus += 0.03
+        founding_bonus = min(founding_bonus, 0.10)
+
+        bonuses = gh_bonus + founding_bonus
+
+        # Coverage multiplier
+        n_clusters = sum(
+            1 for _, cs in CLEAN_CLUSTERS.items()
+            if cand_clean_skills & cs
+        )
+        coverage_mult = 0.85 + 0.15 * (n_clusters / len(CLEAN_CLUSTERS))
+
+        # Trajectory multiplier
+        trajectory_mult = 1.0
+        dated_jobs = sorted(
+            [(parse_date(j.get("start_date")), j) for j in career if j.get("start_date")],
+            key=lambda x: x[0] or datetime.date.min,
+        )
+        if len(dated_jobs) >= 2 and exp > 0:
+            sen_delta = (seniority_level(dated_jobs[-1][1].get("title", ""))
+                         - seniority_level(dated_jobs[0][1].get("title", "")))
+            trajectory_mult = max(0.90, min(1.15, 0.90 + 0.05 * (sen_delta / exp)))
+
+        # Behavioral modifier
+        rr = float(signals.get("recruiter_response_rate", 0.5) or 0.5)
+
+        last_active   = parse_date(signals.get("last_active_date"))
+        days_inactive = (CURRENT_DATE - last_active).days if last_active else 540
+        if days_inactive <= 30:    recency_mult = 1.00
+        elif days_inactive <= 90:  recency_mult = 0.85
+        elif days_inactive <= 180: recency_mult = 0.70
+        elif days_inactive <= 365: recency_mult = 0.50
+        else:                      recency_mult = 0.20
+
+        notice = signals.get("notice_period_days")
+        if notice is None:    notice_mult = 0.60
+        elif notice <= 30:    notice_mult = 1.00
+        elif notice <= 60:    notice_mult = 0.70
+        elif notice <= 90:    notice_mult = 0.40
+        else:                 notice_mult = 0.20
+
+        verified    = (signals.get("verified_email", False)
+                       and signals.get("verified_phone", False))
+        verify_mult = 1.0 if verified else 0.90
+        otw_boost   = 1.10 if signals.get("open_to_work_flag") else 1.0
+        m_beh       = rr * recency_mult * notice_mult * verify_mult * otw_boost
+
+        # Final score
+        base = (
+            0.35 * s_sem
+            + 0.30 * s_skill
+            + 0.15 * s_exp
+            + 0.12 * s_emp
+            + 0.08 * s_loc
+        )
+        final = (
+            (base + bonuses)
+            * m_beh
+            * coverage_mult
+            * trajectory_mult
+            * consulting_penalty
+            * p_shallow
+            * p_noncoding
+            * p_title_chaser
+            * p_cv_speech
+        )
+
+        # Reasoning string
+        last_job  = career[-1] if career else {}
+        company   = last_job.get("company", "—")
+        job_title = last_job.get("title", "AI/ML Engineer")
+
+        top_skills = sorted(
+            [(s.get("name", ""), s.get("duration_months", 0))
+             for s in skills if _clean(s.get("name", "")) in ALL_CRITICAL_CLEAN],
+            key=lambda x: x[1], reverse=True,
+        )[:3]
+        skill_str = ", ".join(x[0] for x in top_skills) if top_skills else "Python, ML"
+
+        loc_note   = (f"Willing to relocate from {profile.get('location','India')}"
+                      if willing_relocate
+                      else f"Based in {profile.get('location','India')}")
+        notice_str = f"{notice}d" if notice is not None else "unknown"
+        gh_note    = " · active GitHub contributor" if gh_bonus > 0.05 else ""
+
+        concern = ""
+        if exp > 12:
+            concern = f" Note: {int(exp)}yr exp is above the JD 5-9yr range."
+        elif exp < 4:
+            concern = f" Note: {int(exp)}yr exp is below the JD target."
+        if consulting_frac > 0.5:
+            concern += " Consulting-heavy career."
+
+        reasoning = (
+            f"{profile.get('anonymized_name','Candidate')} · {int(exp)}yr · "
+            f"{job_title} @ {company}. "
+            f"Strong signal on {skill_str}. "
+            f"{loc_note}. Notice: {notice_str}{gh_note}.{concern}"
+        )
+        
+
         results.append({
             "candidate_id": cid,
-            "final_score":  round(float(s_sem * 0.35 + s_skill * 0.30 +
-                                        s_exp  * 0.15 + s_emp  * 0.12 +
-                                        s_loc  * 0.08), 4),
+            "final_score":  round(final, 4),
             "s_sem":   round(s_sem,   4),
             "s_skill": round(s_skill, 4),
             "s_exp":   round(s_exp,   4),
             "s_emp":   round(s_emp,   4),
             "s_loc":   round(s_loc,   4),
-            "flags":   "none",
-            "reasoning": "",
+            "m_beh":   round(m_beh,   4),
+            "flags":   "|".join(flags) if flags else "none",
+            "reasoning": reasoning,
         })
 
     print(f"  Stage 2: {len(results)} candidates scored")
